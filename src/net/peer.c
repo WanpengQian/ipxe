@@ -51,9 +51,9 @@ FILE_SECBOOT ( PERMITTED );
  *     retrieve a previously unattempted segment from this peer will
  *     succeed
  *
- *   - r[i] ("retry"): the probability that an attempt to retrieve a
- *     previously attempted (but failed) segment from this peer will
- *     succeed
+ *   - r[i] ("retry"): the probability (bounded to 0<=r[i]<=p[i]) that
+ *     an attempt to retrieve a previously attempted (but failed at
+ *     least once) segment from this peer will succeed
  *
  *   - h[i] ("hit time"): the expected elapsed time until the first
  *     byte of a successful retrieval response from this peer
@@ -66,13 +66,15 @@ FILE_SECBOOT ( PERMITTED );
  *     and b[i]) and the measured total success response time
  *
  *   - m[i] ("miss time"): the expected elapsed time until a failure
- *     response from this peer
+ *     retrieval response from this peer
  *
  *   - n[i] ("number"): the number of currently active retrieval
  *     attempts from this peer by this client
  *
- *   - f[i] ("failure"): the number of hard failures (excluding cache
- *     misses) experienced when attempting retrieval from this peer
+ *   - f[i] ("failure"): the number of consecutive retrieval attempts
+ *     from this peer that did not result in a valid retrieval
+ *     response (noting that a cache miss still counts as a valid
+ *     retrieval response)
  *
  *   - w[i] ("weight"): the policy-defined relative cost weighting of
  *     attempting retrieval from this peer
@@ -85,18 +87,48 @@ FILE_SECBOOT ( PERMITTED );
  * We define groups of peers that are expected to share similar
  * characteristics.  For example: peers discovered via multicast on a
  * local network may be in one group, with predefined (and potentially
- * remote) peers placed into a separate group.  Some properties are
- * maintained as per-group estimates rather than individual per-peer
- * estimates (or as combinations of group and individual estimates),
- * to counteract the low expected sample count for any individual peer
- * within the group.
+ * remote) peers placed into a separate group.
+ *
+ * For each estimated peer property value we define a corresponding
+ * estimated value for the peer group, updated using the same
+ * measurement values.
+ *
+ * Peers that are not selected for retrieval will not be measured and
+ * their estimates will become stale.  We therefore drift each peer's
+ * estimate weakly towards its group-level estimate, so that the peer
+ * may eventually be reconsidered for selection within the group.
+ *
+ * Similarly, peer groups that are not selected for retrieval will not
+ * be measured and their estimates will become stale.  We therefore
+ * drift each peer group's estimates weakly back towards the initial
+ * (a priori) estimates for that group.
+ *
+ * Note that we must maintain separate group-level estimators that are
+ * updated only from measurements (rather than calculating the
+ * group-level estimate as the average of its members' estimates), to
+ * avoid introducing an unwanted positive feedback loop.
+ *
+ * The initial values for the estimates of a newly discovered peer may
+ * be taken from its group's current estimates.  The initial values
+ * for the estimates of a new peer group must be optimistic
+ * (e.g. assuming that p[i]=r[i]=1.0) so that a retrieval from within
+ * the group will be attempted and real measurements may be obtained.
+ * A peer group that is initialised with extremely pessimistic values
+ * (e.g. p[i]=0) would never be selected.
+ *
+ * Some properties (e.g. the retry probability) are expected to be
+ * sampled extremely rarely.  To counteract the low expected sample
+ * count for any individual peer, these properties may be derived from
+ * group-level properties (e.g. calculating r[i] as being p[i]
+ * multiplied by a group-level probability factor estimate, rather
+ * that maintaining a full per-peer estimator for r[i]).
  *
  * The set of peers may include some special-function peers, such as a
  * local filesystem cache (which will be extremely fast for any
  * segments that it happens to hold), or an origin server (which may
- * be extremely slow but is guaranteed to hold all segments).  These
- * are modelled as peer groups with suitable characteristics (e.g. a
- * high cost weighting w[i] for an origin server).
+ * be extremely slow but is expected to hold all segments).  These are
+ * modelled as peer groups with suitable characteristics (e.g. a high
+ * cost weighting w[i] for an origin server).
  *
  * For each segment within the file, we select a peer and attempt
  * retrieval from that peer.  If the retrieval fails, then we continue
@@ -142,19 +174,19 @@ FILE_SECBOOT ( PERMITTED );
  * retrieving the segment.  The expected cost of executing this
  * strategy is then:
  *
- *   C = Σ{k} C[i_k] * ∏{j<k} (1-q[i_k])
+ *   C = sum{k}( C[i_k] * product{j<k}( (1-q[i_j]) ) )
  *
- * We can minimise this expected cost using an algorithm equivalent to
- * a bubble sort.  Consider two peers x and y that are currently
- * ordered adjacently within the strategy, and then consider the
- * effect on the cost if the order of these two peers were to be
- * swapped.  Multiplication of the (1-q[x])(1-q[y]) terms is
- * commutative, and so all preceding and all following terms within
- * the summation would be unaffected by the swap and may be
- * disregarded for the purpose of comparison.  For the two terms that
- * remain, the product of all preceding terms within the product is
- * identical and may be similarly factored out and disregarded.  We
- * are therefore left to compare only:
+ * We can minimise this expected cost using essentially the argument
+ * used to prove correctness of the standard bubble sort algorithm.
+ * Consider two peers x and y that are currently ordered adjacently
+ * within the strategy, and then consider the effect on the cost if
+ * the order of these two peers were to be swapped.  Multiplication of
+ * the (1-q[x])(1-q[y]) terms is commutative, and so all preceding and
+ * all following terms within the summation would be unaffected by the
+ * swap and may be disregarded for the purpose of comparison.  For the
+ * two terms that remain, the product of all preceding terms within
+ * the product is identical and may be similarly factored out and
+ * disregarded.  We are therefore left to compare only:
  *
  *   C[x] + C[y]*(1-q[x])  <=>  C[y] + C[x]*(1-q[y])
  *
@@ -177,6 +209,23 @@ FILE_SECBOOT ( PERMITTED );
  *        = w[i]*(q[i]*(h[i] + L/b[i]) + (1-q[i])*m[i]) / q[i]
  *        = w[i]*(h[i] + L/b[i] + m[i]*((1-q[i])/q[i]))
  *
+ * Note that the expected cost function assumes independence between
+ * retrieval attempts from different peers (i.e. that a failure on one
+ * peer does not predict either failure or success on the next peer to
+ * be tried).  This assumption may not be correct if there is a strong
+ * correlation between the set of segments held by peers (e.g. if
+ * peers share an underlying segment cache).  When some correlation
+ * exists, the cost function becomes optimistic and the peer selection
+ * algorithm degenerates to become a reasonable heuristic.
+ *
+ * Note also that the nominal full sorted list will change every time
+ * we make a new decision.  For example: the estimated peer properties
+ * may have changed due to new measurements, or a peer may have
+ * changed from using q[i]=p[i] to using q[i]=r[i] because a retrieval
+ * has already been attempted.  (r[i] is necessarily not greater than
+ * p[i] and so a retry attempt can never score better than an initial
+ * attempt from the same peer.)
+ *
  * We introduce some deliberate suboptimality to avoid clustering and
  * herding behaviours between multiple clients all concurrently
  * attempting the same download from the same set of available peers.
@@ -188,13 +237,18 @@ FILE_SECBOOT ( PERMITTED );
  * across multiple peers.
  *
  * Secondly, we do not always choose the best peer (i.e. the peer with
- * the lowest peer score).  Instead we randomly choose from amongst
- * the subset of peers that have a score within a fixed multiple of
- * the lowest peer score.  Where scores are widely varying (e.g. a
- * local filesystem cache versus a LAN peer), this will cause us to
- * always choose the better scoring peer.  Where scores are similar,
- * this allows us to statistically balance load amongst multiple
- * comparable peers.
+ * the lowest peer score).  Instead we choose from amongst the subset
+ * of peers that have a score that falls inside a band within a fixed
+ * multiple of the lowest peer score.  Where scores are widely varying
+ * between peers (e.g. a local filesystem cache versus a LAN peer),
+ * this will cause us to always choose the better scoring peer.  Where
+ * scores are similar, this allows us to statistically balance load
+ * amongst multiple comparable peers.  From the subset of peers within
+ * the band, we choose a peer that has the lowest number n[i] of
+ * concurrent connections (breaking ties arbitrarily, e.g. using the
+ * peer with the lowest peer index): this provides some load balancing
+ * even when only one client is active, and decorrelates this decision
+ * between different clients operating with the same set of peers.
  *
  * The remaining peer properties are used to support aspects of
  * operation that are not directly related to the peer selection
