@@ -132,6 +132,10 @@ FILE_SECBOOT ( PERMITTED );
  *   - w[g] ("weight"): the policy-defined relative cost weighting of
  *     attempting retrieval from a peer within this group
  *
+ *   - pT[g] ("probability threshold"): the policy-defined value of
+ *     p[i] below which a peer becomes eligible for eviction in favour
+ *     of newly discovered peers
+ *
  *   - p0[g] ("initial probability"): the a priori value of p[g] before
  *     any measurements have been taken
  *
@@ -153,6 +157,13 @@ FILE_SECBOOT ( PERMITTED );
  * be extremely slow but is expected to hold all segments).  These are
  * modelled as peer groups with suitable characteristics (e.g. a high
  * cost weighting w[g] for an origin server).
+ *
+ * Note that p[g] is an estimate for the probability of getting a
+ * successful response from an individual peer within the group, not
+ * an estimate of the probability of getting a successful response
+ * from the group as a whole.  (The latter depends also upon the
+ * number of peers within the group and the extent to which the
+ * subsets of cached segments are correlated between peers.)
  *
  *
  * EXPLORATION MECHANISM
@@ -323,5 +334,51 @@ FILE_SECBOOT ( PERMITTED );
  * balancing even when only one client is active, and decorrelates
  * this peer selection decision between different clients operating
  * with the same set of peers.
+ *
+ *
+ * DISCOVERY
+ * ---------
+ *
+ * Decisions on when to attempt peer discovery are left to the
+ * consumer (e.g. the PeerDist protocol).  The peer group properties
+ * such as p[g] (or the individual peer properties such as p[i]) may
+ * be used to inform the decision on whether or not discovery is worth
+ * the cost: if there is already a very high probability of
+ * successfully retrieving segments from the existing peers then the
+ * value of further discovery may be minimal.
+ *
+ * Note that the costs of discovery are primarily borne by other nodes
+ * on the network: a multicast discovery probe may need to be received
+ * and processed by every one of a large group of potential peers.
+ * Clients should therefore aim to be conservative in performing
+ * discovery.
+ *
+ * The maximum number of peers is fixed (as described above, to allow
+ * for each segment to have a fixed-size attempt counter array), and
+ * so the addition of a new peer may require an existing peer to be
+ * evicted from the set so that its peer index may be reused.
+ *
+ * Discovery may operate with lower authenticity guarantees than
+ * retrieval.  For example: it may be possible for any node on the
+ * network to send a response to a discovery request, but possible
+ * only for nodes in possession of a shared secret to send a (valid)
+ * response to a retrieval request.  To guard against an eviction
+ * attack on the peer list, we choose as eviction candidates only
+ * peers that are within the same group as the newly discovered peer
+ * and that have a current probability estimate p[i] that is below the
+ * group's predefined probability threshold pT[g].  This ensures that
+ * a rogue discovery response cannot directly cause useful peers to be
+ * evicted.
+ *
+ * If this set of eviction candidates is non-empty, then we choose to
+ * evict the peer with the lowest current probability estimate p[i].
+ * If the set of eviction candidates is empty, then we ignore the
+ * newly discovered peer.
+ *
+ * Some peer groups (e.g. those containing the special-function peers
+ * that represent a local filesystem cache or a remote origin server)
+ * may not be subject to either discovery or eviction, and will
+ * instead contain a fixed list of peers created when the download is
+ * instantiated.
  *
  */
