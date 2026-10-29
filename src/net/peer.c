@@ -33,6 +33,22 @@ FILE_SECBOOT ( PERMITTED );
  * be downloaded and a variable set of peers from which we may attempt
  * to retrieve each segment.
  *
+ * The major peer-to-peer operations are:
+ *
+ *   - The selection of the next peer from which to attempt the
+ *     retrieval of a segment
+ *
+ *   - Measurement and estimation of various aspects of the retrieval
+ *     attempt, to inform future selection decisions
+ *
+ *   - Maintenance of a discovered peer list
+ *
+ * The peer-to-peer download abstraction is modelled on the practical
+ * operation of the PeerDist protocol, but is designed to be passive
+ * and independent of the actual wire protocol.  It provides the peer
+ * selection algorithm, but does not itself initiate or process any
+ * network traffic.
+ *
  * We assume that some kind of discovery mechanism exists to detect
  * peers, but that this operates at a much slower timescale than the
  * retrieval mechanism.  We expect to perform only a handful of
@@ -44,12 +60,6 @@ FILE_SECBOOT ( PERMITTED );
  * for every segment, but doing so drops throughput by three orders of
  * magnitude and so clients must instead optimistically attempt to
  * retrieve segments from existing peers.)
- *
- * The peer-to-peer download abstraction is modelled on the practical
- * operation of the PeerDist protocol, but is designed to be passive
- * and independent of the actual wire protocol.  It provides the
- * operations that support the peer selection algorithm, but does not
- * itself initiate or process any network traffic.
  *
  *
  * PEER PROPERTIES
@@ -92,10 +102,10 @@ FILE_SECBOOT ( PERMITTED );
  *
  * Some peer properties are used to support aspects of operation that
  * are not directly related to the peer selection algorithm.  For
- * example, peers may be evicted from the peer list after a certain
- * number of failures to obtain a valid retrieval response, and the
- * estimated variation may be used to calculate an appropriate timeout
- * for a retrieval attempt.
+ * example, peers may be forcibly evicted from the peer list after a
+ * certain number of failures to obtain a valid retrieval response,
+ * and the estimated variation may be used to calculate an appropriate
+ * timeout for a retrieval attempt.
  *
  *
  * PEER GROUP PROPERTIES
@@ -164,6 +174,10 @@ FILE_SECBOOT ( PERMITTED );
  * from the group as a whole.  (The latter depends also upon the
  * number of peers within the group and the extent to which the
  * subsets of cached segments are correlated between peers.)
+ *
+ * The probability threshold pT[g] affects only eligibility for
+ * eviction in favour of newly discovered peers: it does not constrain
+ * the forcible eviction of failed peers.
  *
  *
  * EXPLORATION MECHANISM
